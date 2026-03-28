@@ -21,6 +21,10 @@
 ///   - Capacity must be a power of two (asserted at compile time)
 ///   - T must be move-constructible
 ///   - try_push called ONLY from one thread; try_pop from ONE other thread
+
+
+
+///   The parameters are provided as template arguments, not constructor arguments, so they are known at compile time. This enables optimizations like static assertions, fixed-size buffers, and efficient indexing.
 template <typename T, std::size_t Capacity>
 class SPSCQueue {
     static_assert(Capacity >= 2 && (Capacity & (Capacity - 1)) == 0,
@@ -28,6 +32,7 @@ class SPSCQueue {
     static_assert(std::is_move_constructible_v<T>);
 
   public:
+    //explicitly requests the compiler-generated constructor, preserving triviality and enabling better optimizations compared to a manually defined empty constructor.
     SPSCQueue() = default;
 
     // Non-copyable, non-movable (atomics are not movable)
@@ -41,7 +46,7 @@ class SPSCQueue {
         //                        ^^^^^^^ We are the only writer of head_;
         //                                reading our own last-written value needs no sync.
 
-        const std::size_t next = (head + 1) & kMask;
+        const std::size_t next = (head + 1) & kMask; //modulo for wrap-around, valid because Capacity is a power of two.
 
         if (next == tail_.load(std::memory_order_acquire))
             //              ^^^^^^^ acquire: pairs with consumer's release-store to tail_.
@@ -91,7 +96,7 @@ class SPSCQueue {
 
     static constexpr std::size_t capacity() noexcept { return Capacity; }
 
-  private:
+private:
     static constexpr std::size_t kMask = Capacity - 1;
 
     // ┌─────────────────────────────────────────────────────┐
@@ -102,8 +107,15 @@ class SPSCQueue {
     // │  [data_  ...]                 ← shared, read-only   │
     // │                               structure after init  │
     // └─────────────────────────────────────────────────────┘
+#ifdef SPSC_NO_PADDING
+    // Intentionally bad: head_ and tail_ share one cache line
+    // Used ONLY for false-sharing benchmark
+    std::atomic<std::size_t> head_{0};
+    std::atomic<std::size_t> tail_{0};
+#else
     alignas(64) std::atomic<std::size_t> head_{0};
     alignas(64) std::atomic<std::size_t> tail_{0};
+#endif
 
     // data_ is placed after both atomics so it doesn't share their cache lines.
     // Individual slots are accessed by only one side at a time (ring invariant),
